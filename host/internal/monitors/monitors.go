@@ -79,7 +79,14 @@ func (l Layout) Resolve(token string) *Monitor {
 func Detect() (Layout, error) {
 	rects, width, height, err := gnomeLayout()
 	if err != nil {
-		return Layout{}, err
+		gnomeErr := err
+		rects, width, height, err = wlrLayout()
+		if err != nil {
+			return Layout{}, fmt.Errorf(
+				"cannot detect monitor layout (mutter: %v; wlr-randr: %w)",
+				gnomeErr, err,
+			)
+		}
 	}
 	crtcs := drmCRTCs()
 
@@ -201,6 +208,82 @@ func gnomeLayout() (map[string]rect, int, int, error) {
 	return rects, width, height, nil
 }
 
+// wlrLayout reads the active output layout from wlroots compositors such as
+// Wayfire, where Mutter's DisplayConfig interface is not available.
+func wlrLayout() (map[string]rect, int, int, error) {
+	out, err := exec.Command("wlr-randr").Output()
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("cannot run wlr-randr: %w", err)
+	}
+
+	type output struct {
+		name                 string
+		enabled              bool
+		x, y, width, height  int
+		hasPosition, hasMode bool
+	}
+
+	var outputs []output
+	current := -1
+
+	positionLine := regexp.MustCompile(`^\s*Position:\s*(-?\d+),\s*(-?\d+)`)
+	modeLine := regexp.MustCompile(`^\s+(\d+)x(\d+) px,.*\bcurrent\b`)
+
+	for line := range strings.SplitSeq(string(out), "\n") {
+		if line != "" && line[0] != ' ' && line[0] != '\t' {
+			fields := strings.Fields(line)
+			if len(fields) > 0 {
+				outputs = append(outputs, output{name: fields[0]})
+				current = len(outputs) - 1
+			}
+			continue
+		}
+
+		if current < 0 {
+			continue
+		}
+
+		switch strings.TrimSpace(line) {
+		case "Enabled: yes":
+			outputs[current].enabled = true
+		}
+
+		if m := positionLine.FindStringSubmatch(line); m != nil {
+			outputs[current].x, _ = strconv.Atoi(m[1])
+			outputs[current].y, _ = strconv.Atoi(m[2])
+			outputs[current].hasPosition = true
+		}
+
+		if m := modeLine.FindStringSubmatch(line); m != nil {
+			outputs[current].width, _ = strconv.Atoi(m[1])
+			outputs[current].height, _ = strconv.Atoi(m[2])
+			outputs[current].hasMode = true
+		}
+	}
+
+	rects := map[string]rect{}
+	width, height := 0, 0
+
+	for _, o := range outputs {
+		if !o.enabled || !o.hasPosition || !o.hasMode ||
+			o.width == 0 || o.height == 0 {
+			continue
+		}
+
+		rects[normalise(o.name)] = rect{o.x, o.y, o.width, o.height}
+		width = max(width, o.x+o.width)
+		height = max(height, o.y+o.height)
+	}
+
+	if len(rects) == 0 {
+		return nil, 0, 0, fmt.Errorf(
+			"wlr-randr returned no enabled outputs with a current mode and position",
+		)
+	}
+
+	return rects, width, height, nil
+}
+
 // drmCRTCs maps a connector to the CRTC object id capture has to name.
 //
 // Reading debugfs needs root, but the layout above needs the user's session
@@ -223,7 +306,7 @@ func drmCRTCs() map[string]int {
 	result := map[string]int{} // connector -> object id
 	pending := ""
 
-	for _, line := range strings.Split(string(out), "\n") {
+	for line := range strings.SplitSeq(string(out), "\n") {
 		if m := crtcLine.FindStringSubmatch(line); m != nil {
 			id, _ := strconv.Atoi(m[1])
 			ids[m[2]] = id

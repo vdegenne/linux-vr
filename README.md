@@ -1,4 +1,4 @@
-# linux-vr
+# vdegenne/linux-vr
 
 A fork of [vr-meta/linux-vr](https://github.com/vr-meta/linux-vr) for streaming a Linux desktop to a Meta Quest headset.
 

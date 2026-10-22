@@ -32,7 +32,7 @@ Run `vainfo` again to verify that the required encoding profile is available.
 Install Go and the required system dependencies, then clone this fork:
 
 ```bash
-git clone <your-fork-url>
+git clone https://github.com/vdegenne/linux-vr.git
 cd linux-vr
 ```
 

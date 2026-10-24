@@ -63,6 +63,7 @@ type Announcement struct {
 // Info is the full answer, over HTTP.
 type Info struct {
 	Announcement
+	Codec    string             `json:"codec"`
 	Desktop  Size               `json:"desktop"`
 	Screens  []Screen           `json:"screens"`
 	Services map[string]Service `json:"services"`
@@ -153,8 +154,17 @@ func (s *Server) info(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
+
+	codec := "avc"
+	if s.Settings != nil {
+		if configured := s.Settings().Capture.Codec; configured != "" {
+			codec = configured
+		}
+	}
+
 	_ = encoder.Encode(Info{
 		Announcement: s.announcement(),
+		Codec:        codec,
 		Desktop:      Size{s.Layout.Width, s.Layout.Height},
 		Screens:      screens,
 		Services:     services,

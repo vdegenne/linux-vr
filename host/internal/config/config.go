@@ -63,6 +63,7 @@ type Config struct {
 // docs/host-baseline.md and in the comments of the capture package; they are
 // measured on this hardware, not copied from a guide.
 type Capture struct {
+	Codec  string `json:"codec"`
 	Device string `json:"device"` // DRM node kmsgrab reads
 	FPS    int    `json:"fps"`    // must match the display, not the headset
 	QP     int    `json:"qp"`     // constant quality; a desktop is mostly static
@@ -155,6 +156,7 @@ func Default() Config {
 		Bind: "0.0.0.0",
 		Tray: true,
 		Capture: Capture{
+			Codec:  "avc",
 			Device: firstRenderNode(),
 			FPS:    60,
 			QP:     23,
@@ -232,6 +234,9 @@ func (c *Config) fill() {
 	}
 	if c.ASR.Provider == "" {
 		c.ASR.Provider = ProviderCustom
+	}
+	if c.Capture.Codec == "" {
+		c.Capture.Codec = d.Capture.Codec
 	}
 	if c.Capture.Device == "" {
 		c.Capture.Device = d.Capture.Device

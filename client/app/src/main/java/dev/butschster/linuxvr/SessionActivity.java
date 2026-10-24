@@ -33,6 +33,7 @@ public class SessionActivity extends Activity {
     private LinearLayout body;
     private TextView status;
     private Server server;
+    private String codec;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -82,6 +83,7 @@ public class SessionActivity extends Activity {
         new Control().fetch(server, new Control.Listener() {
             @Override
             public void onInfo(Control.Info info) {
+                codec = info.codec;
                 render(info);
             }
 
@@ -184,6 +186,7 @@ public class SessionActivity extends Activity {
         intent.putExtra(PanelActivity.EXTRA_HOST, server.host);
         intent.putExtra(PanelActivity.EXTRA_MONITOR, screen.index);
         intent.putExtra(PanelActivity.EXTRA_LABEL, server.name + " · " + screen.label());
+        intent.putExtra(PanelActivity.EXTRA_CODEC, codec);
         open(intent);
     }
 

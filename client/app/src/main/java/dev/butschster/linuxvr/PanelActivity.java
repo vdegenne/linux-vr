@@ -21,6 +21,7 @@ public class PanelActivity extends Activity {
     public static final String EXTRA_HOST = "host";
     public static final String EXTRA_MONITOR = "monitor";
     public static final String EXTRA_LABEL = "label";
+    public static final String EXTRA_CODEC = "codec";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -32,6 +33,7 @@ public class PanelActivity extends Activity {
         String host = getIntent().getStringExtra(EXTRA_HOST);
         int monitor = getIntent().getIntExtra(EXTRA_MONITOR, 0);
         String label = getIntent().getStringExtra(EXTRA_LABEL);
+        String codec = getIntent().getStringExtra(EXTRA_CODEC);
         if (host == null) host = "";
         // The shell shows this in the window's own furniture, which is the only
         // thing distinguishing four otherwise identical desktop windows.
@@ -40,7 +42,7 @@ public class PanelActivity extends Activity {
         Log.i(TAG, "window for monitor " + monitor + " on " + host);
 
         StreamView view = new StreamView(this);
-        view.configure(host, monitor);
+        view.configure(host, monitor, codec);
         setContentView(view);
     }
 }

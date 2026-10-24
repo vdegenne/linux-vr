@@ -224,15 +224,27 @@ func (s *Service) Connections() []Connection {
 // Every flag here was chosen against a measurement; the reasoning is kept
 // because it is the part that is expensive to rediscover.
 func (s *Service) command(m monitors.Monitor) *exec.Cmd {
-	return exec.Command("wl-screenrec",
+	codec := s.cfg.Codec
+	muxer := codec
+	if codec == "avc" {
+		muxer = "h264"
+	}
+
+	args := []string{
 		"--output", m.Connector,
 		"--max-fps", "30",
-		"--codec", "avc",
+		"--codec", codec,
 		// "--no-damage",
 		"--bitrate", "1 MB",
-		"--ffmpeg-muxer", "h264",
+		"--ffmpeg-muxer", muxer,
 		"--filename", "pipe:1",
-	)
+	}
+
+	if codec == "hevc" {
+		args = append(args, "--low-power", "off")
+	}
+
+	return exec.Command("wl-screenrec", args...)
 }
 
 // stop ends an encoder.

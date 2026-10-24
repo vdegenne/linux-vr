@@ -77,15 +77,18 @@ public class StreamView extends SurfaceView implements SurfaceHolder.Callback {
     private float pressU = 0f;
     private float pressV = 0f;
 
+    private String codec;
+
     public StreamView(Context context) {
         super(context);
         getHolder().addCallback(this);
         setFocusable(true);
     }
 
-    public void configure(String host, int monitor) {
+    public void configure(String host, int monitor, String codec) {
         this.host = host;
         this.monitor = monitor;
+        this.codec = codec;
     }
 
     private int streamPort() {
@@ -152,76 +155,160 @@ public class StreamView extends SurfaceView implements SurfaceHolder.Callback {
     }
 
     private void decodeLoop(InputStream in, Surface surface) throws IOException {
-        // Width and height here are advisory: the decoder takes the real
-        // geometry from the SPS in the stream.
-        MediaFormat format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, 2560, 1440);
+        String mime = "hevc".equalsIgnoreCase(this.codec)
+                ? MediaFormat.MIMETYPE_VIDEO_HEVC
+                : MediaFormat.MIMETYPE_VIDEO_AVC;
+        boolean hevc = MediaFormat.MIMETYPE_VIDEO_HEVC.equals(mime);
+
+        MediaFormat format = MediaFormat.createVideoFormat(mime, 2560, 1440);
         format.setInteger("low-latency", 1);
 
-        MediaCodec codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
-        codec.configure(format, surface, null, 0);
-        codec.start();
+        MediaCodec decoder = MediaCodec.createDecoderByType(mime);
+        decoder.configure(format, surface, null, 0);
+        decoder.start();
 
         MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
-        new Thread(() -> drainOutput(codec, info), "drain").start();
+        new Thread(() -> drainOutput(decoder, info), "drain").start();
 
         byte[] chunk = new byte[64 * 1024];
         byte[] pending = new byte[1 << 20];
         int pendingLen = 0;
+        int auStart = 0;
         long ptsUs = 0;
+        boolean pendingHasVcl = false;
 
         try {
             while (running) {
                 int n = in.read(chunk);
-                if (n < 0) break;
+                if (n < 0)
+                    break;
 
                 if (pendingLen + n > pending.length) {
-                    // A single access unit larger than a megabyte means the
-                    // stream is not what we think it is; start over rather than
-                    // grow without bound.
                     pendingLen = 0;
+                    auStart = 0;
+                    pendingHasVcl = false;
                     continue;
                 }
+
                 System.arraycopy(chunk, 0, pending, pendingLen, n);
                 pendingLen += n;
 
                 int cursor = findStartCode(pending, 0, pendingLen);
-                if (cursor < 0) continue;
+                if (cursor < 0)
+                    continue;
 
-                int auStart = cursor;
+                auStart = 0;
+
                 while (true) {
                     int codeLen = startCodeLength(pending, cursor);
-                    int next = findStartCode(pending, cursor + codeLen, pendingLen);
-                    if (next < 0) break;
+                    int next = findStartCode(
+                            pending, cursor + codeLen, pendingLen);
+                    if (next < 0)
+                        break;
 
-                    int nalType = pending[cursor + codeLen] & 0x1F;
-                    if (nalType == 1 || nalType == 5) {
-                        // A VCL NAL closes the access unit: everything from the
-                        // previous boundary up to and including it is one frame.
+                    if (cursor + codeLen >= next) {
+                        cursor = next;
+                        continue;
+                    }
+
+                    int nalType;
+                    boolean firstSlice = false;
+                    boolean vcl;
+
+                    if (hevc) {
+                        nalType = (pending[cursor + codeLen] >> 1) & 0x3F;
+                        vcl = nalType <= 31;
+                        firstSlice = vcl
+                                && isHevcFirstSlice(
+                                        pending, cursor, next, codeLen);
+                    } else {
+                        nalType = pending[cursor + codeLen] & 0x1F;
+                        vcl = nalType == 1 || nalType == 5;
+                    }
+
+                    if (hevc) {
+                        // These NAL types can mark the beginning of a new AU.
+                        boolean startsNextAu = nalType == 32 || nalType == 33
+                                || nalType == 34 || nalType == 35
+                                || nalType == 39;
+
+                        if (pendingHasVcl && (startsNextAu || firstSlice)) {
+                            int size = cursor - auStart;
+                            if (size > 0) {
+                                int index = decoder.dequeueInputBuffer(10000);
+                                if (index >= 0) {
+                                    ByteBuffer buf = decoder.getInputBuffer(index);
+                                    if (buf == null || size > buf.capacity()) {
+                                        decoder.queueInputBuffer(
+                                                index, 0, 0, ptsUs, 0);
+                                        throw new IOException(
+                                                "HEVC access unit exceeds decoder buffer");
+                                    }
+
+                                    buf.clear();
+                                    buf.put(pending, auStart, size);
+                                    decoder.queueInputBuffer(
+                                            index, 0, size, ptsUs, 0);
+                                    ptsUs += 1000000 / 60;
+                                    unitsIn++;
+                                }
+                            }
+
+                            auStart = cursor;
+                            pendingHasVcl = false;
+                        }
+
+                        if (vcl)
+                            pendingHasVcl = true;
+                    } else if (vcl) {
+                        // Keep the existing AVC boundary handling.
                         int size = next - auStart;
-                        int index = codec.dequeueInputBuffer(10000);
+                        int index = decoder.dequeueInputBuffer(10000);
                         if (index >= 0) {
-                            ByteBuffer buf = codec.getInputBuffer(index);
-                            buf.clear();
-                            buf.put(pending, auStart, Math.min(size, buf.capacity()));
-                            codec.queueInputBuffer(index, 0, Math.min(size, buf.capacity()), ptsUs, 0);
-                            ptsUs += 1000000 / 60;
-                            unitsIn++;
+                            ByteBuffer buf = decoder.getInputBuffer(index);
+                            if (buf != null) {
+                                buf.clear();
+                                int copySize = Math.min(size, buf.capacity());
+                                buf.put(pending, auStart, copySize);
+                                decoder.queueInputBuffer(
+                                        index, 0, copySize, ptsUs, 0);
+                                ptsUs += 1000000 / 60;
+                                unitsIn++;
+                            }
                         }
                         auStart = next;
                     }
+
                     cursor = next;
                 }
 
-                System.arraycopy(pending, auStart, pending, 0, pendingLen - auStart);
+                System.arraycopy(
+                        pending, auStart, pending, 0, pendingLen - auStart);
                 pendingLen -= auStart;
             }
         } finally {
             try {
-                codec.stop();
-                codec.release();
+                decoder.stop();
+                decoder.release();
             } catch (IllegalStateException ignored) {
             }
         }
+    }
+
+    private static boolean isHevcFirstSlice(
+            byte[] data, int nalStart, int nalEnd, int codeLen) {
+        int header = nalStart + codeLen;
+
+        // HEVC has a two-byte NAL header, followed by the slice header.
+        if (header + 2 >= nalEnd)
+            return false;
+
+        int nalType = (data[header] >> 1) & 0x3F;
+        if (nalType > 31)
+            return false;
+
+        // first_slice_segment_in_pic_flag is the first bit of the RBSP.
+        return (data[header + 2] & 0x80) != 0;
     }
 
     private void drainOutput(MediaCodec codec, MediaCodec.BufferInfo info) {
@@ -252,8 +339,10 @@ public class StreamView extends SurfaceView implements SurfaceHolder.Callback {
     private static int findStartCode(byte[] b, int from, int limit) {
         for (int i = Math.max(from, 0); i + 3 <= limit; i++) {
             if (b[i] == 0 && b[i + 1] == 0) {
-                if (b[i + 2] == 1) return i;
-                if (i + 4 <= limit && b[i + 2] == 0 && b[i + 3] == 1) return i;
+                if (b[i + 2] == 1)
+                    return i;
+                if (i + 4 <= limit && b[i + 2] == 0 && b[i + 3] == 1)
+                    return i;
             }
         }
         return -1;
@@ -302,7 +391,8 @@ public class StreamView extends SurfaceView implements SurfaceHolder.Callback {
             }
 
             OutputStream out = inputOut;
-            if (out == null) return;
+            if (out == null)
+                return;
             out.write(line.getBytes());
             out.flush();
         }
@@ -310,7 +400,8 @@ public class StreamView extends SurfaceView implements SurfaceHolder.Callback {
 
     private void closeInput() {
         try {
-            if (inputSocket != null) inputSocket.close();
+            if (inputSocket != null)
+                inputSocket.close();
         } catch (IOException ignored) {
         }
         inputSocket = null;
@@ -330,19 +421,21 @@ public class StreamView extends SurfaceView implements SurfaceHolder.Callback {
     private void sendPosition(float x, float y) {
         int w = getWidth();
         int h = getHeight();
-        if (w <= 0 || h <= 0) return;
+        if (w <= 0 || h <= 0)
+            return;
 
         float u = Math.min(Math.max(x / w, 0f), 1f);
         float v = Math.min(Math.max(y / h, 0f), 1f);
 
         if (pressed && !dragging) {
             if (Math.abs(u - pressU) < DRAG_THRESHOLD && Math.abs(v - pressV) < DRAG_THRESHOLD) {
-                return;   // still a click, not a drag
+                return; // still a click, not a drag
             }
             dragging = true;
         }
 
-        if (Math.abs(u - lastU) < 0.0002f && Math.abs(v - lastV) < 0.0002f) return;
+        if (Math.abs(u - lastU) < 0.0002f && Math.abs(v - lastV) < 0.0002f)
+            return;
         lastU = u;
         lastV = v;
         sendMove(String.format(Locale.US, "m %.5f %.5f%n", u, v));

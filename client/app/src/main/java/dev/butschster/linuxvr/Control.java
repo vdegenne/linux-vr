@@ -63,6 +63,7 @@ public class Control {
         public Feature capture = new Feature();
         public Feature input = new Feature();
         public Feature voice = new Feature();
+        public String codec;
     }
 
     public interface Listener {
@@ -114,6 +115,7 @@ public class Control {
         info.name = json.optString("name", "");
         info.os = json.optString("os", "");
         info.user = json.optString("user", "");
+        info.codec = json.getString("codec");
 
         JSONObject desktop = json.optJSONObject("desktop");
         if (desktop != null) {
